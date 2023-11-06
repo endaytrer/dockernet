@@ -50,7 +50,8 @@ create_device() {
     local image_name=$2
     local network=${PREFIX}$3
 
-    if docker run -d --rm --name ${name} --network ${network} --privileged   ${@:4} ${image_name} >> /dev/null; then
+    if docker run -dit --rm --name ${name} --network ${network} --privileged   ${@:4} ${image_name} >> /dev/null; then
+        docker exec ${name} ip route flush 0/0
         echo "$1 -> $3"
     fi
 }
@@ -86,11 +87,11 @@ create_topo() {
     create_network net2 ${CURRENT_SUBNET}
     increment_subnet
 
-    create_device r1 frrouting/frr net0 -v ${PWD}/config/r1:/etc/frr -v ${PWD}/log/r1
-    connect_device r1 net1
-    create_device h1 archlinux net0
+    create_device r1 frrouting/frr net0 -v ${PWD}/config/r1:/etc/frr --ip 10.0.0.2
+    connect_device r1 net1 --ip 10.0.0.10
+    create_device h1 archlinux net0 --ip 10.0.0.3
 
-    create_device r2 frrouting/frr net2 -v ${PWD}/config/r2:/etc/frr
-    connect_device r2 net1
-    create_device h2 archlinux net2
+    create_device r2 frrouting/frr net2 -v ${PWD}/config/r2:/etc/frr --ip 10.0.0.18
+    connect_device r2 net1 --ip 10.0.0.11
+    create_device h2 archlinux net2 --ip 10.0.0.19
 }
