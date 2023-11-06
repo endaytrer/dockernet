@@ -67,6 +67,16 @@ connect_device() {
     docker network connect ${@:3} ${network_name} ${container_name}
 }
 
+exec_device() {
+    if [ $# -lt 2 ]; then
+        echo "Usage: $0 CONTAINER_NAME PROGRAM [params]"
+        return 1
+    fi
+    local container_name=${PREFIX}$1
+    local program=$2
+    docker exec ${container_name} ${program} ${@:3}
+}
+
 attach_device() {
     if [ $# -lt 2 ]; then
         echo "Usage: $0 CONTAINER_NAME PROGRAM [params]"
@@ -90,8 +100,12 @@ create_topo() {
     create_device r1 frrouting/frr net0 -v ${PWD}/config/r1:/etc/frr --ip 10.0.0.2
     connect_device r1 net1 --ip 10.0.0.10
     create_device h1 archlinux net0 --ip 10.0.0.3
+    # default gateway
+    exec_device h1 ip route add default via 10.0.0.2
 
     create_device r2 frrouting/frr net2 -v ${PWD}/config/r2:/etc/frr --ip 10.0.0.18
     connect_device r2 net1 --ip 10.0.0.11
     create_device h2 archlinux net2 --ip 10.0.0.19
+    # default gateway
+    exec_device h2 ip route add default via 10.0.0.18
 }
