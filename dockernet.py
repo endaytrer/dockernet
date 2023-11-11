@@ -4,13 +4,19 @@ import docker
 import docker.types
 import ipaddress
 import traceback
+import shutil
+import pathlib
 import os
 from cmd import Cmd
 PREFIX = "dn-"
 PROMPT = "dn> "
+NETNS_DIR = "/var/run/netns"
 client = docker.from_env()
 
 def clean_networks():
+    print("Cleaning peripheral files")
+    if pathlib.Path(NETNS_DIR).exists():
+        shutil.rmtree(NETNS_DIR)
     print("Cleaning devices...")
     for container in client.containers.list():
         if container.name.startswith(PREFIX):
@@ -32,19 +38,25 @@ def create_network(name: str, subnet: ipaddress.IPv4Network):
         internal=True)
 
 def create_device(name: str, image_name: str, network: str, *args):
+    container_name = PREFIX + name
+    network_name = "none"  if network == "none" else PREFIX + network
+    pathlib.Path(NETNS_DIR).mkdir(parents=True, exist_ok=True)
     subprocess.run(["docker",
                     "run",
                     "-dit",
                     "--rm",
                     "--name",
-                    PREFIX + name,
+                    container_name,
                     "--network",
-                    PREFIX + network,
+                    network_name,
                     "--privileged",
                     *args,
                     image_name])
-    subprocess.run(["docker", "exec", PREFIX + name, "ip", "route", "flush", "0/0"])
+    # create netns file in /var/run/netns so that `ip` command can visit.
+    pid = subprocess.run(['docker', 'inspect', '-f', "'{{.State.Pid}}'", container_name], capture_output=True).stdout.decode()[1:-2]
+    subprocess.run(["ln", "-sfT", f"/proc/{pid}/ns/net", f"{NETNS_DIR}/{container_name}"])
     print(f"{name} -> {network}")
+
 
 def connect_device(container_name: str, network_name: str, *args):
     subprocess.run([
@@ -76,6 +88,13 @@ def attach_device(container_name: str, program: str, *args):
         program,
         *args
     ])
+
+def link_device(c1: str, if1: str, c2: str, if2: str):
+    c1_name = PREFIX + c1
+    c2_name = PREFIX + c2
+    subprocess.run(["ip", "netns", "exec", c1_name, "ip", "link", "add", "dev", if1, "type", "veth", "peer", "name", if2, "netns", c2_name])
+    exec_device(c1, "ip", "link", "set", "dev", if1, "up")
+    exec_device(c2, "ip", "link", "set", "dev", if2, "up")
 
 class DockerNet(Cmd):
     prompt = PROMPT
@@ -151,6 +170,19 @@ Subcommands:
             connect_device(name, network_name, *args)
         except:
             traceback.print_exc()
+    def do_link_device(self, argstr: str):
+        args = argstr.split()
+        if len(args) != 4:
+            print("Usage: link_device CONTAINER1 IF1 CONTAINER2 IF2")
+            return
+        try:
+            c1 = args[0]
+            if1 = args[1]
+            c2 = args[2]
+            if2 = args[3]
+            link_device(c1, if1, c2, if2)
+        except:
+            traceback.print_exc()
 
     def do_exec_device(self, argstr: str):
         args = argstr.split()
@@ -185,30 +217,29 @@ Subcommands:
             return
         try:
             clean_networks()
-            create_network("net0", ipaddress.ip_network("10.0.0.0/29"))
-            create_network("net1", ipaddress.ip_network("10.0.0.8/29"))
-            create_network("net2", ipaddress.ip_network("10.0.0.16/29"))
 
-            create_device("r1", "frrouting/frr", "net0",
-                          "-v", f"{os.getcwd()}/config/r1:/etc/frr",
-                          "--ip", "10.0.0.2"),
-            connect_device("r1", "net1",
-                           "--ip", "10.0.0.10")
-            create_device("h1", "archlinux", "net0",
-                          "--ip", "10.0.0.3")
-            exec_device("h1",
-                        "ip", "route", "add", "default", "via", "10.0.0.2")
+            create_device("r1", "frrouting/frr", "none",
+                          "-v", f"{os.getcwd()}/config/r1:/etc/frr")
+            create_device("r2", "frrouting/frr", "none",
+                          "-v", f"{os.getcwd()}/config/r2:/etc/frr",)
+            create_device("h1", "archlinux", "none")
+            create_device("h2", "archlinux", "none")
 
+            link_device("r1", "eth0", "r2", "eth0")
+            link_device("r1", "eth1", "h1", "eth0")
+            link_device("r2", "eth1", "h2", "eth0")
 
-            create_device("r2", "frrouting/frr", "net2",
-                          "-v", f"{os.getcwd()}/config/r2:/etc/frr",
-                          "--ip", "10.0.0.18"),
-            connect_device("r2", "net1",
-                           "--ip", "10.0.0.11")
-            create_device("h2", "archlinux", "net2",
-                          "--ip", "10.0.0.19")
-            exec_device("h2",
-                        "ip", "route", "add", "default", "via", "10.0.0.18")
+            exec_device("r1", "ip", "addr", "add", "10.0.0.10/29", "dev", "eth0")
+            exec_device("r1", "ip", "addr", "add", "10.0.0.1/29", "dev", "eth1")
+
+            exec_device("h1", "ip", "addr", "add", "10.0.0.2/29", "dev", "eth0")
+            exec_device("h1", "ip", "route", "add", "default", "via", "10.0.0.1")
+
+            exec_device("r2", "ip", "addr", "add", "10.0.0.11/29", "dev", "eth0")
+            exec_device("r2", "ip", "addr", "add", "10.0.0.17/29", "dev", "eth1")
+
+            exec_device("h2", "ip", "addr", "add", "10.0.0.18/29", "dev", "eth0")
+            exec_device("h2", "ip", "route", "add", "default", "via", "10.0.0.17")
         except:
             traceback.print_exc()
 
@@ -216,6 +247,8 @@ Subcommands:
         raise SystemExit
 
 if __name__ == "__main__":
+    if os.geteuid() != 0:
+        exit("dockernet.py should be run as root")
     try:
         app = DockerNet()
         app.cmdloop("Welcome to the jungle!")
