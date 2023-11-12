@@ -11,6 +11,7 @@ from cmd import Cmd
 PREFIX = "dn-"
 PROMPT = "dn> "
 NETNS_DIR = "/var/run/netns"
+
 client = docker.from_env()
 
 def clean_networks():
@@ -51,7 +52,7 @@ def create_device(name: str, image_name: str, network: str, *args):
                     network_name,
                     "--privileged",
                     *args,
-                    image_name])
+                    image_name], stdout=subprocess.DEVNULL)
     # create netns file in /var/run/netns so that `ip` command can visit.
     pid = subprocess.run(['docker', 'inspect', '-f', "'{{.State.Pid}}'", container_name], capture_output=True).stdout.decode()[1:-2]
     subprocess.run(["ln", "-sfT", f"/proc/{pid}/ns/net", f"{NETNS_DIR}/{container_name}"])
@@ -89,12 +90,22 @@ def attach_device(container_name: str, program: str, *args):
         *args
     ])
 
-def link_device(c1: str, if1: str, c2: str, if2: str):
+def link_device(c1: str, if1: str, c2: str, if2: str, ip1: str | None = None, ip2: str | None = None):
     c1_name = PREFIX + c1
     c2_name = PREFIX + c2
     subprocess.run(["ip", "netns", "exec", c1_name, "ip", "link", "add", "dev", if1, "type", "veth", "peer", "name", if2, "netns", c2_name])
+
+    # Bring up device
     exec_device(c1, "ip", "link", "set", "dev", if1, "up")
     exec_device(c2, "ip", "link", "set", "dev", if2, "up")
+
+    # set ip if configured
+    if ip1 is not None:
+        exec_device(c1, "ip", "addr", "add", ip1, "dev", if1)
+    if ip2 is not None:
+        exec_device(c2, "ip", "addr", "add", ip2, "dev", if2)
+    
+    print(f"{c1}.{if1} -> {c2}.{if2}")
 
 class DockerNet(Cmd):
     prompt = PROMPT
@@ -245,8 +256,7 @@ Subcommands:
 
     def do_exit(self, argstr):
         raise SystemExit
-
-if __name__ == "__main__":
+def main_loop():
     if os.geteuid() != 0:
         exit("dockernet.py should be run as root")
     try:
@@ -254,3 +264,6 @@ if __name__ == "__main__":
         app.cmdloop("Welcome to the jungle!")
     finally:
         clean_networks()
+
+if __name__ == "__main__":
+    main_loop()

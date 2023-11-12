@@ -1,4 +1,5 @@
 config/*/*
 !config/*/daemons
 !config/*/bgpd.conf
+.config
 log/**/*
