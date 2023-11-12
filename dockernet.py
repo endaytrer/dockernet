@@ -58,6 +58,34 @@ def create_device(name: str, image_name: str, network: str, *args):
     subprocess.run(["ln", "-sfT", f"/proc/{pid}/ns/net", f"{NETNS_DIR}/{container_name}"])
     print(f"{name} -> {network}")
 
+hosts: dict[str, ipaddress.IPv4Address | None] = {}
+
+def create_host(name: str, image_name: str, network: str, *args):
+    create_device(name, image_name, network, *args)
+    hosts[name] = None
+
+def pingall():
+    max_host_name_len = max([len(i) for i in hosts.keys()])
+    for h1 in hosts.keys():
+        if hosts[h1] is None:
+            continue
+        print(f"{h1:>{max_host_name_len + 1}} |", end="", flush=True)
+        for h2 in hosts.keys():
+            if h1 == h2 or hosts[h2] is None:
+                continue
+            rt = subprocess.run([
+                "docker",
+                "exec",
+                PREFIX + h1,
+                "ping",
+                "-c1",
+                str(hosts[h2])
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT).returncode
+            if rt == 0:
+                print(f"{h2:>{max_host_name_len + 1}}", end="", flush=True)
+            else:
+                print(f"{'x':>{max_host_name_len + 1}}", end="", flush=True)
+        print("")
 
 def connect_device(container_name: str, network_name: str, *args):
     subprocess.run([
@@ -101,9 +129,19 @@ def link_device(c1: str, if1: str, c2: str, if2: str, ip1: str | None = None, ip
 
     # set ip if configured
     if ip1 is not None:
+        intf1 = ipaddress.ip_interface(ip1)
         exec_device(c1, "ip", "addr", "add", ip1, "dev", if1)
+        if c1 in hosts.keys():
+            hosts[c1] = intf1.ip
+            if ip2 is not None:
+                exec_device(c1, "ip", "route", "add", "default", "via", str(ipaddress.ip_interface(ip2).ip))
     if ip2 is not None:
+        intf2 = ipaddress.ip_interface(ip2)
         exec_device(c2, "ip", "addr", "add", ip2, "dev", if2)
+        if c2 in hosts.keys():
+            hosts[c2] = intf2.ip
+            if ip1 is not None:
+                exec_device(c2, "ip", "route", "add", "default", "via", str(ipaddress.ip_interface(ip1).ip))
     
     print(f"{c1}.{if1} -> {c2}.{if2}")
 
@@ -141,6 +179,15 @@ Subcommands:
         except:
             traceback.print_exc()
 
+    def do_pingall(self, argstr):
+        args = argstr.split()
+        if len(args) != 0:
+            print("Usage: pingall")
+            return
+        try:
+            pingall()
+        except:
+            traceback.print_exc()
 
     def do_create_network(self, argstr: str):
         args = argstr.split()
@@ -169,6 +216,20 @@ Subcommands:
         except:
             traceback.print_exc()
     
+    def do_create_host(self, argstr: str):
+        args = argstr.split()
+        if len(args) < 3:
+            print("Usage: create_host NAME IMAGE NETWORK [..args]")
+            return
+        try:
+            name = args[0]
+            image_name = args[1]
+            network = args[2]
+            args = args[3:]
+            create_host(name, image_name, network, *args)
+        except:
+            traceback.print_exc()
+
     def do_connect_device(self, argstr: str):
         args = argstr.split()
         if len(args) < 2:
@@ -181,6 +242,7 @@ Subcommands:
             connect_device(name, network_name, *args)
         except:
             traceback.print_exc()
+
     def do_link_device(self, argstr: str):
         args = argstr.split()
         if len(args) != 4:
@@ -233,24 +295,12 @@ Subcommands:
                           "-v", f"{os.getcwd()}/config/r1:/etc/frr")
             create_device("r2", "frrouting/frr", "none",
                           "-v", f"{os.getcwd()}/config/r2:/etc/frr",)
-            create_device("h1", "archlinux", "none")
-            create_device("h2", "archlinux", "none")
+            create_host("h1", "archlinux", "none")
+            create_host("h2", "archlinux", "none")
 
-            link_device("r1", "eth0", "r2", "eth0")
-            link_device("r1", "eth1", "h1", "eth0")
-            link_device("r2", "eth1", "h2", "eth0")
-
-            exec_device("r1", "ip", "addr", "add", "10.0.0.10/29", "dev", "eth0")
-            exec_device("r1", "ip", "addr", "add", "10.0.0.1/29", "dev", "eth1")
-
-            exec_device("h1", "ip", "addr", "add", "10.0.0.2/29", "dev", "eth0")
-            exec_device("h1", "ip", "route", "add", "default", "via", "10.0.0.1")
-
-            exec_device("r2", "ip", "addr", "add", "10.0.0.11/29", "dev", "eth0")
-            exec_device("r2", "ip", "addr", "add", "10.0.0.17/29", "dev", "eth1")
-
-            exec_device("h2", "ip", "addr", "add", "10.0.0.18/29", "dev", "eth0")
-            exec_device("h2", "ip", "route", "add", "default", "via", "10.0.0.17")
+            link_device("r1", "eth0", "r2", "eth0", "10.0.0.10/29", "10.0.0.11/29")
+            link_device("r1", "eth1", "h1", "eth0", "10.0.0.1/29", "10.0.0.2/29")
+            link_device("r2", "eth1", "h2", "eth0", "10.0.0.17/29", "10.0.0.18/29")
         except:
             traceback.print_exc()
 

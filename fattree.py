@@ -11,6 +11,7 @@ import subprocess
 from next_network import new_network
 
 ROUTER_IMAGE = "frrouting/frr"
+HOST_IMAGE = "frrouting/frr"
 DEFAULT_CONFIG = "default_config"
 
 config_dir = pathlib.Path(".config").absolute()
@@ -23,7 +24,6 @@ frr defaults datacenter
 !
 router bgp {asn}
   bgp router-id {router_ip}
-  bgp bestpath as-path multipath-relax
   no bgp network import check
 {neighbors}
 !
@@ -34,7 +34,6 @@ frr defaults datacenter
 !
 router bgp {private_asn}
   bgp router-id {router_ip}
-  bgp bestpath as-path multipath-relax
   no bgp network import check
   bgp confederation identifier {public_asn}
   bgp confederation peers {confed_peers}
@@ -97,6 +96,18 @@ def fattree(num_pods: int, num_leafs_per_pod: int):
                 ip_addresses[rack_device].append(ip_rack)
 
                 links.append([leaf_device, f"eth{num_pods + rack}", rack_device, f"eth{leaf}", str(ip_leaf), str(ip_rack)])
+    # create logical links: rack - host
+
+    host_network = ipaddress.ip_network("10.128.0.0/9")
+    subnet_iter = host_network.subnets(new_prefix=30)
+    for i in range(num_pods * num_leafs_per_pod):
+        dockernet.create_host(f"h{i}", HOST_IMAGE, "none")
+        subnet = next(subnet_iter)
+        iter = subnet.hosts()
+        ip_rack = ipaddress.ip_interface((next(iter), subnet.prefixlen))
+        ip_host = ipaddress.ip_interface((next(iter), subnet.prefixlen))
+        ip_addresses[f"rr{i}"].append(ip_rack)
+        links.append([f"rr{i}", f"eth{num_leafs_per_pod}", f"h{i}", "eth0", str(ip_rack), str(ip_host)])
 
     # create spine devices and their configs
     config_dir.mkdir(parents=True, exist_ok=True)
